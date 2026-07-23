@@ -1,0 +1,92 @@
+plugins {
+    id "com.android.application"
+    id "kotlin-android"
+    id "dev.flutter.flutter-gradle-plugin"
+    id "com.google.gms.google-services"
+}
+
+def localProperties = new Properties()
+def localPropertiesFile = rootProject.file('local.properties')
+if (localPropertiesFile.exists()) {
+    localPropertiesFile.withReader('UTF-8') { reader ->
+        localProperties.load(reader)
+    }
+}
+
+def flutterVersionCode = localProperties.getProperty('flutter.versionCode')
+if (flutterVersionCode == null) {
+    flutterVersionCode = '1'
+}
+
+def flutterVersionName = localProperties.getProperty('flutter.versionName')
+if (flutterVersionName == null) {
+    flutterVersionName = '1.0.0'
+}
+
+android {
+    namespace "com.coinvault.rewards_app"
+    compileSdk 34
+    ndkVersion flutter.ndkVersion
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+        coreLibraryDesugaringEnabled true
+    }
+
+    kotlinOptions {
+        jvmTarget = JavaVersion.VERSION_17
+    }
+
+    sourceSets {
+        main.java.srcDirs += 'src/main/kotlin'
+    }
+
+    defaultConfig {
+        // TODO: Change this to your own unique Application ID before release.
+        applicationId "com.coinvault.rewards_app"
+        minSdkVersion 23
+        targetSdkVersion 34
+        versionCode flutterVersionCode.toInteger()
+        versionName flutterVersionName
+        multiDexEnabled true
+    }
+
+    signingConfigs {
+        // Debug builds use Flutter's default debug keystore automatically.
+        // For a release build, create android/key.properties (see README)
+        // and uncomment the release signing config below.
+        // release {
+        //     keyAlias keystoreProperties['keyAlias']
+        //     keyPassword keystoreProperties['keyPassword']
+        //     storeFile keystoreProperties['storeFile'] ? file(keystoreProperties['storeFile']) : null
+        //     storePassword keystoreProperties['storePassword']
+        // }
+    }
+
+    buildTypes {
+        debug {
+            applicationIdSuffix ".debug"
+        }
+        release {
+            // Using debug signing so `flutter run --release` still works
+            // out of the box. Replace with your own release signingConfig
+            // (see the commented block above + README) before publishing
+            // to the Play Store.
+            signingConfig signingConfigs.debug
+            minifyEnabled true
+            shrinkResources true
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+        }
+    }
+}
+
+flutter {
+    source '../..'
+}
+
+dependencies {
+    coreLibraryDesugaring 'com.android.tools:desugar_jdk_libs:2.0.4'
+    implementation platform('com.google.firebase:firebase-bom:33.1.2')
+    implementation 'androidx.multidex:multidex:2.0.1'
+}

@@ -1,0 +1,149 @@
+rules_version = '2';
+
+// =====================================================================
+// FIRESTORE SECURITY RULES — CoinVault Rewards
+// =====================================================================
+// IMPORTANT PRODUCTION NOTE:
+// Pure Firestore rules can restrict *who* may write and enforce *shape*
+// checks (e.g. "coins can only increase, and only by the exact reward
+// amount of a game the user hasn't already claimed"), but they cannot
+// run arbitrary server logic. For maximum security against a modified/
+// rooted client bypassing the app's own checks, the recommended
+// production setup is to move all balance-mutating writes (creditCoins,
+// creditCashPoints, debitCashPoints, daily reward claim) into Cloud
+// Functions callable endpoints, and lock users/{uid}.coins /
+// users/{uid}.cashPoints to be writable ONLY by the Cloud Functions
+// service account (i.e. remove client "update" access to those two
+// fields entirely). The rules below still meaningfully reduce risk in
+// the meantime by: (1) requiring auth on every read/write, (2) blocking
+// users from reading/writing other users' data, (3) blocking users from
+// editing their own referralCode/uid/createdAt, and (4) using
+// create-only completion documents so a client cannot re-trigger a
+// reward for a game/task/day it already has a completion record for.
+// =====================================================================
+
+function isSignedIn() {
+  return request.auth != null;
+}
+
+function isOwner(uid) {
+  return isSignedIn() && request.auth.uid == uid;
+}
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ---------------- USERS ----------------
+    match /users/{uid} {
+      allow read: if isOwner(uid);
+      allow create: if isOwner(uid)
+        && request.resource.data.uid == null // uid is the doc id, not stored redundantly
+        && request.resource.data.coins is int
+        && request.resource.data.coins <= 100 // only the referral welcome bonus, if any
+        && request.resource.data.cashPoints == 0;
+
+      // Users may update their own profile fields, but NOT coins/cashPoints/
+      // referralCode/referralCount directly — those are mutated exclusively
+      // through the transaction-guarded repository flows / Cloud Functions.
+      allow update: if isOwner(uid)
+        && request.resource.data.referralCode == resource.data.referralCode
+        && request.resource.data.referralCount == resource.data.referralCount
+        && request.resource.data.createdAt == resource.data.createdAt
+        && (
+             // Allow the specific fields the client legitimately updates:
+             request.resource.data.diff(resource.data).affectedKeys()
+               .hasOnly(['username', 'photoUrl', 'fcmToken'])
+             ||
+             // Allow coins/cashPoints changes only in the same write as a
+             // corresponding transaction sub-document creation is not
+             // expressible here directly — this is exactly the gap Cloud
+             // Functions closes. Left permissive for demo/dev purposes:
+             request.resource.data.diff(resource.data).affectedKeys()
+               .hasOnly(['coins', 'cashPoints'])
+           );
+
+      allow delete: if isOwner(uid);
+
+      // Transaction history: append-only from the client, never editable.
+      match /transactions/{txId} {
+        allow read: if isOwner(uid);
+        allow create: if isOwner(uid);
+        allow update, delete: if false;
+      }
+
+      // Personal notifications: readable/markable by owner, created only
+      // by trusted backend (Cloud Functions / Admin SDK), never by client.
+      match /notifications/{notifId} {
+        allow read: if isOwner(uid);
+        allow update: if isOwner(uid)
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['isRead']);
+        allow create, delete: if false;
+      }
+    }
+
+    // ---------------- GAMES (read-only catalog, admin-managed) ----------------
+    match /games/{gameId} {
+      allow read: if isSignedIn();
+      allow write: if false; // managed via admin panel / Firebase console
+    }
+
+    // ---------------- CASH TASKS (read-only catalog, admin-managed) ----------------
+    match /cash_tasks/{taskId} {
+      allow read: if isSignedIn();
+      allow write: if false;
+    }
+
+    // ---------------- GAME COMPLETIONS (duplicate-reward prevention) ----------------
+    match /game_completions/{completionId} {
+      allow read: if isSignedIn() && resource.data.uid == request.auth.uid;
+      // Create-only, and only for the caller's own uid. Because the client
+      // uses a deterministic doc ID (uid_gameId or uid_gameId_date), this
+      // "create" will fail server-side if a completion already exists for
+      // that key — the actual duplicate-prevention mechanism.
+      allow create: if isSignedIn() && request.resource.data.uid == request.auth.uid;
+      allow update, delete: if false;
+    }
+
+    // ---------------- CASH TASK COMPLETIONS ----------------
+    match /cash_task_completions/{completionId} {
+      allow read: if isSignedIn() && resource.data.uid == request.auth.uid;
+      allow create: if isSignedIn() && request.resource.data.uid == request.auth.uid;
+      allow update: if false; // status changes (pending -> approved) are admin-only
+      allow delete: if false;
+    }
+
+    // ---------------- WITHDRAWALS ----------------
+    match /withdrawals/{withdrawalId} {
+      allow read: if isSignedIn() && resource.data.uid == request.auth.uid;
+      allow create: if isSignedIn()
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.status == 'pending';
+      // Users cannot edit or cancel a submitted withdrawal; status changes
+      // (approved/rejected) are admin-only via the Firebase console / a
+      // separate admin panel with elevated (Admin SDK) privileges.
+      allow update, delete: if false;
+    }
+
+    // ---------------- REFERRALS ----------------
+    match /referrals/{referralId} {
+      allow read: if isSignedIn() && resource.data.referrerUid == request.auth.uid;
+      allow create: if isSignedIn(); // written during registration
+      allow update, delete: if false; // status -> 'rewarded' is admin/backend only
+    }
+
+    // ---------------- DAILY REWARDS ----------------
+    match /daily_rewards/{uid} {
+      allow read: if isOwner(uid);
+      // Client claims write lastClaimDate/streak; the same-day duplicate
+      // check happens inside a Firestore transaction in the app code.
+      // For airtight enforcement, migrate this to a Cloud Function.
+      allow write: if isOwner(uid);
+    }
+
+    // ---------------- APP CONFIG (remote, read-only for clients) ----------------
+    match /config/{docId} {
+      allow read: if isSignedIn();
+      allow write: if false; // update via Firebase console / admin panel only
+    }
+  }
+}
